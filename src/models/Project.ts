@@ -1,32 +1,22 @@
-import mongoose from "mongoose";
+import mongoose, { Schema, Document } from "mongoose";
 
-const FieldSchema = new mongoose.Schema({
-  name: String,
-  type: String,
-});
+export interface IProject extends Document {
+  name: string;
+  description?: string;
+  data: Map<string, any[]>;
+}
 
-const ModelSchema = new mongoose.Schema({
-  name: String,
-  fields: [FieldSchema],
-});
-
-const RecordSchema = new mongoose.Schema(
-  {},
-  { strict: false }
-);
-
-const ProjectSchema = new mongoose.Schema(
+const ProjectSchema = new Schema<IProject>(
   {
-    name: String,
-    description: String,
-    models: [ModelSchema],
+    name: { type: String, required: true },
+    description: { type: String },
     data: {
       type: Map,
-      of: [RecordSchema], // كل Model له Records خاصة فيه
+      of: [Schema.Types.Mixed],
       default: {},
     },
   },
   { timestamps: true }
 );
 
-export default mongoose.model("Project", ProjectSchema);
+export default mongoose.model<IProject>("Project", ProjectSchema);
