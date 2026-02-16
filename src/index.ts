@@ -4,14 +4,16 @@ import dotenv from "dotenv";
 import cors from "cors";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
+import bcrypt from "bcryptjs";
+import jwt from "jsonwebtoken";
 
 import Project from "./models/Project";
+import User from "./models/User";
 import { generateMockProject } from "./services/mockGenerate";
 
 dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT || 10000;
 
 app.use(cors());
 app.use(helmet());
@@ -24,141 +26,24 @@ app.use(
   })
 );
 
+const PORT: number = Number(process.env.PORT) || 10000;
+const MONGO_URI = process.env.MONGO_URI as string;
+const JWT_SECRET = process.env.JWT_SECRET as string;
+
+if (!MONGO_URI) {
+  throw new Error("MONGO_URI not defined");
+}
+
+if (!JWT_SECRET) {
+  throw new Error("JWT_SECRET not defined");
+}
+
 async function startServer() {
   try {
-    if (!process.env.MONGO_URI) {
-      throw new Error("MONGO_URI is missing");
-    }
+    await mongoose.connect(MONGO_URI);
+    console.log("MongoDB connected");
 
-    await mongoose.connect(process.env.MONGO_URI);
-    console.log("Connected to MongoDB");
-
-    app.get("/", (_, res) => {
-      res.json({ status: "API running" });
-    });
-
-    app.post("/generate", async (req, res) => {
-      try {
-        const { idea } = req.body;
-        if (!idea)
-          return res.status(400).json({ error: "Idea required" });
-
-        const generated = generateMockProject(idea);
-        const project = await Project.create(generated);
-
-        res.json({ projectId: project._id, project });
-      } catch {
-        res.status(500).json({ error: "Server error" });
-      }
-    });
-
-    app.get("/project/:id", async (req, res) => {
-      try {
-        const project = await Project.findById(req.params.id);
-        if (!project)
-          return res.status(404).json({ error: "Not found" });
-
-        res.json(project);
-      } catch {
-        res.status(500).json({ error: "Server error" });
-      }
-    });
-
-    app.post("/project/:id/:model", async (req, res) => {
-      try {
-        const { id, model } = req.params;
-        const data = req.body;
-
-        const project = await Project.findById(id);
-        if (!project)
-          return res.status(404).json({ error: "Project not found" });
-
-        const existing = project.data.get(model) || [];
-        existing.push(data);
-
-        project.data.set(model, existing);
-        project.markModified("data");
-
-        await project.save();
-
-        res.json({ message: "Record added", records: existing });
-      } catch {
-        res.status(500).json({ error: "Server error" });
-      }
-    });
-
-    app.get("/project/:id/:model", async (req, res) => {
-      try {
-        const { id, model } = req.params;
-
-        const project = await Project.findById(id);
-        if (!project)
-          return res.status(404).json({ error: "Project not found" });
-
-        const records = project.data.get(model) || [];
-        res.json(records);
-      } catch {
-        res.status(500).json({ error: "Server error" });
-      }
-    });
-
-    app.put("/project/:id/:model/:index", async (req, res) => {
-      try {
-        const { id, model, index } = req.params;
-        const data = req.body;
-
-        const project = await Project.findById(id);
-        if (!project)
-          return res.status(404).json({ error: "Project not found" });
-
-        const records = project.data.get(model) || [];
-
-        if (!records[Number(index)])
-          return res.status(404).json({ error: "Record not found" });
-
-        records[Number(index)] = {
-          ...records[Number(index)],
-          ...data,
-        };
-
-        project.data.set(model, records);
-        project.markModified("data");
-
-        await project.save();
-
-        res.json({ message: "Record updated", records });
-      } catch {
-        res.status(500).json({ error: "Server error" });
-      }
-    });
-
-    app.delete("/project/:id/:model/:index", async (req, res) => {
-      try {
-        const { id, model, index } = req.params;
-
-        const project = await Project.findById(id);
-        if (!project)
-          return res.status(404).json({ error: "Project not found" });
-
-        const records = project.data.get(model) || [];
-
-        if (!records[Number(index)])
-          return res.status(404).json({ error: "Record not found" });
-
-        records.splice(Number(index), 1);
-
-        project.data.set(model, records);
-        project.markModified("data");
-
-        await project.save();
-
-        res.json({ message: "Record deleted", records });
-      } catch {
-        res.status(500).json({ error: "Server error" });
-      }
-    });
-
-    app.listen(Number(PORT), "0.0.0.0", () => {
+    app.listen(PORT, "0.0.0.0", () => {
       console.log(`Server running on port ${PORT}`);
     });
   } catch (error) {
@@ -166,5 +51,139 @@ async function startServer() {
     process.exit(1);
   }
 }
+
+app.get("/", (req, res) => {
+  res.json({ message: "API is running" });
+});
+
+app.post("/auth/register", async (req, res) => {
+  try {
+    const { email, password } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({ error: "Email and password required" });
+    }
+
+    const existingUser = await User.findOne({ email });
+    if (existingUser) {
+      return res.status(400).json({ error: "User already exists" });
+    }
+
+    const passwordHash = await bcrypt.hash(password, 10);
+
+    const user = await User.create({
+      email,
+      passwordHash,
+      plan: "free",
+    });
+
+    const token = jwt.sign(
+      { userId: user._id },
+      JWT_SECRET,
+      { expiresIn: "7d" }
+    );
+
+    res.status(201).json({
+      message: "User created",
+      token,
+    });
+  } catch {
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+app.post("/auth/login", async (req, res) => {
+  try {
+    const { email, password } = req.body;
+
+    const user = await User.findOne({ email });
+    if (!user) {
+      return res.status(400).json({ error: "Invalid credentials" });
+    }
+
+    const valid = await bcrypt.compare(password, user.passwordHash);
+    if (!valid) {
+      return res.status(400).json({ error: "Invalid credentials" });
+    }
+
+    const token = jwt.sign(
+      { userId: user._id },
+      JWT_SECRET,
+      { expiresIn: "7d" }
+    );
+
+    res.json({ token });
+  } catch {
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+app.post("/generate", async (req, res) => {
+  const { idea } = req.body;
+
+  if (!idea) {
+    return res.status(400).json({ error: "Idea required" });
+  }
+
+  const generated = generateMockProject(idea);
+  const project = await Project.create(generated);
+
+  res.json({
+    projectId: project._id,
+    project,
+  });
+});
+
+app.get("/project/:id", async (req, res) => {
+  const project = await Project.findById(req.params.id);
+
+  if (!project) {
+    return res.status(404).json({ error: "Not found" });
+  }
+
+  res.json(project);
+});
+
+app.post("/project/:id/:model", async (req, res) => {
+  const { id, model } = req.params;
+  const data = req.body;
+
+  const project = await Project.findById(id);
+
+  if (!project) {
+    return res.status(404).json({ error: "Project not found" });
+  }
+
+  const currentData = project.data.get(model) as any[] | undefined;
+
+  if (!currentData) {
+    project.data.set(model, [data]);
+  } else {
+    currentData.push(data);
+    project.data.set(model, currentData);
+  }
+
+  project.markModified("data");
+  await project.save();
+
+  res.json({
+    message: "Record added",
+    records: project.data.get(model),
+  });
+});
+
+app.get("/project/:id/:model", async (req, res) => {
+  const { id, model } = req.params;
+
+  const project = await Project.findById(id);
+
+  if (!project) {
+    return res.status(404).json({ error: "Project not found" });
+  }
+
+  const records = project.data.get(model) || [];
+
+  res.json(records);
+});
 
 startServer();
